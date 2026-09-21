@@ -3,6 +3,8 @@ using CampusFlow.Api.Data;
 using CampusFlow.Api.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Storage;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -68,12 +70,53 @@ app.MapGet("/health", () => Results.Ok(new
 
 app.MapControllers();
 
+/*
+ * Supabase already contains internal system tables. EF Core's standard
+ * EnsureCreatedAsync method can therefore assume that the database has
+ * already been initialized even when the CampusFlow tables do not exist.
+ *
+ * For PostgreSQL, check specifically for the CampusFlow Users table.
+ * If it is absent, create every table defined in CampusFlowDbContext.
+ */
 await using (var scope = app.Services.CreateAsyncScope())
 {
     var database = scope.ServiceProvider
         .GetRequiredService<CampusFlowDbContext>();
 
-    await database.Database.EnsureCreatedAsync();
+    if (database.Database.IsNpgsql())
+    {
+        await database.Database.OpenConnectionAsync();
+
+        try
+        {
+            await using var command =
+                database.Database.GetDbConnection().CreateCommand();
+
+            command.CommandText =
+                """SELECT to_regclass('public."Users"') IS NOT NULL;""";
+
+            var result = await command.ExecuteScalarAsync();
+            var campusFlowTablesExist =
+                result is bool exists && exists;
+
+            if (!campusFlowTablesExist)
+            {
+                var databaseCreator = database
+                    .GetService<IRelationalDatabaseCreator>();
+
+                await databaseCreator.CreateTablesAsync();
+            }
+        }
+        finally
+        {
+            await database.Database.CloseConnectionAsync();
+        }
+    }
+    else
+    {
+        // SQLite is used only for local development.
+        await database.Database.EnsureCreatedAsync();
+    }
 }
 
 app.Run();
