@@ -1,0 +1,13 @@
+**/bin/
+**/obj/
+
+.env
+.env.*
+
+*.db
+*.db-shm
+*.db-wal
+
+google-services.json
+local.properties
+*service-account*.json
