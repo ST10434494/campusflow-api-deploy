@@ -5,9 +5,8 @@ using Google.Apis.Auth.OAuth2;
 namespace CampusFlow.Api.Auth;
 
 /// <summary>
-/// Centralises Firebase Admin initialisation and ID-token verification.
-/// Credentials are supplied by GOOGLE_APPLICATION_CREDENTIALS locally or
-/// by an Azure App Service environment setting in the hosted prototype.
+/// Centralises Firebase Admin initialisation and Firebase ID-token verification.
+/// Credentials are supplied through environment variables in Render.
 /// </summary>
 public sealed class FirebaseTokenVerifier
 {
@@ -16,34 +15,74 @@ public sealed class FirebaseTokenVerifier
     public FirebaseTokenVerifier(IConfiguration configuration)
     {
         var projectId = configuration["Firebase:ProjectId"];
-        if (string.IsNullOrWhiteSpace(projectId) || projectId.StartsWith("REPLACE_"))
+
+        if (string.IsNullOrWhiteSpace(projectId) ||
+            projectId.StartsWith("REPLACE_", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
-                "Firebase:ProjectId is not configured. Set Firebase__ProjectId before starting the API.");
+                "Firebase project ID is not configured. " +
+                "Set the Firebase__ProjectId environment variable.");
         }
 
-        var serviceAccountJson = configuration["Firebase:ServiceAccountJson"];
-        var credential = string.IsNullOrWhiteSpace(serviceAccountJson)
-            ? GoogleCredential.GetApplicationDefault()
-            : GoogleCredential.FromJson(serviceAccountJson);
+        var serviceAccountJson =
+            configuration["Firebase:ServiceAccountJson"];
 
-        FirebaseApp app;
+        if (string.IsNullOrWhiteSpace(serviceAccountJson))
+        {
+            throw new InvalidOperationException(
+                "Firebase service-account credentials are not configured. " +
+                "Set the Firebase__ServiceAccountJson environment variable.");
+        }
+
+        GoogleCredential credential;
+
         try
         {
-            app = FirebaseApp.DefaultInstance;
+            credential = GoogleCredential.FromJson(serviceAccountJson);
         }
-        catch (InvalidOperationException)
+        catch (Exception exception)
         {
-            app = FirebaseApp.Create(new AppOptions
+            throw new InvalidOperationException(
+                "Firebase__ServiceAccountJson does not contain valid " +
+                "Firebase service-account JSON.",
+                exception);
+        }
+
+        /*
+         * FirebaseApp.DefaultInstance returns null when the default Firebase
+         * application has not been created. It does not necessarily throw an
+         * InvalidOperationException, so the null value must be checked.
+         */
+        var firebaseApp = FirebaseApp.DefaultInstance;
+
+        if (firebaseApp is null)
+        {
+            firebaseApp = FirebaseApp.Create(new AppOptions
             {
                 Credential = credential,
                 ProjectId = projectId
             });
         }
 
-        _firebaseAuth = FirebaseAuth.GetAuth(app);
+        _firebaseAuth = FirebaseAuth.GetAuth(firebaseApp);
     }
 
-    public Task<FirebaseToken> VerifyAsync(string idToken, CancellationToken cancellationToken = default) =>
-        _firebaseAuth.VerifyIdTokenAsync(idToken, cancellationToken);
+    /// <summary>
+    /// Verifies a Firebase ID token sent by the Android application.
+    /// </summary>
+    public Task<FirebaseToken> VerifyAsync(
+        string idToken,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(idToken))
+        {
+            throw new ArgumentException(
+                "A Firebase ID token is required.",
+                nameof(idToken));
+        }
+
+        return _firebaseAuth.VerifyIdTokenAsync(
+            idToken,
+            cancellationToken);
+    }
 }
